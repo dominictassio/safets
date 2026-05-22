@@ -54,6 +54,9 @@ type Who =
   | Aged
   | string
   | readonly string[]
+  | Array<string>
+  | ``
+  | `+${number} (${number}) ${number}-${number}`
   | "World";
 
 export function greet(who: Who) {

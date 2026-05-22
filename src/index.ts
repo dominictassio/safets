@@ -52,43 +52,42 @@ function generateDocumentation(
   }
 }
 
-function typeToString(
-  type: ts.Type,
-  checker: ts.TypeChecker,
-  visited = new Set<ts.Type>(),
-  depth = 5,
-): string {
+function typeToString(type: ts.Type, checker: ts.TypeChecker): string {
   // String literal: "Hello, World!"
-  if (type.flags & ts.TypeFlags.StringLiteral) {
-    return `"${(type as ts.StringLiteralType).value}"`;
+  if (type.isStringLiteral()) {
+    return `"${type.value}"`;
   }
 
   // Number literal: 42, 3.14, 0xff, 0.255e3
-  if (type.flags & ts.TypeFlags.NumberLiteral) {
-    return String((type as ts.NumberLiteralType).value);
+  if (type.isNumberLiteral()) {
+    return String(type.value);
   }
 
   // BigInt literal: 9007199254740991n
-  if (type.flags & ts.TypeFlags.BigIntLiteral) {
-    const { negative, base10Value } = (type as ts.BigIntLiteralType).value;
+  if (isBigIntLiteral(type)) {
+    const { negative, base10Value } = type.value;
     return `${negative ? "-" : ""}${base10Value}n`;
   }
 
   // Boolean literal: true or false
   if (type.flags & ts.TypeFlags.BooleanLiteral) {
-    return (type as any).intrinsicName; // fix
+    return (type as unknown as { intrinsicName: string }).intrinsicName;
   }
 
   // NOT WORKING
   // Template literal: `+${number} $({number}) ${number}-${number}`
-  if (type.flags & ts.TypeFlags.TemplateLiteral) {
-    const template = type as ts.TemplateLiteralType;
-    let result = template.texts[0]!;
-    template.types.forEach((spanType, i) => {
-      result += `\${${typeToString(spanType, checker, visited, depth)}}`;
-      result += template.texts[i + 1];
-    });
-    return `\`${result}\``;
+  if (isTemplateLiteral(type)) {
+    const template: ts.TemplateLiteralType = type;
+    if (template.texts.length > 0) {
+      let result = template.texts[0] ?? "";
+      type.types.forEach((spanType, i) => {
+        result += `\${${typeToString(spanType, checker)}}`;
+        result += template.texts[i + 1] ?? "";
+      });
+      return `\`${result}\``;
+    } else {
+      return "``";
+    }
   }
 
   // Primitive types
@@ -112,16 +111,12 @@ function typeToString(
 
   // Union: A | B
   if (type.isUnion()) {
-    return type.types
-      .map((t) => typeToString(t, checker, visited, depth))
-      .join(" | ");
+    return type.types.map((t) => typeToString(t, checker)).join(" | ");
   }
 
   // Intersection: A & B
   if (type.isIntersection()) {
-    return type.types
-      .map((t) => typeToString(t, checker, visited, depth))
-      .join(" & ");
+    return type.types.map((t) => typeToString(t, checker)).join(" & ");
   }
 
   if (
@@ -138,7 +133,7 @@ function typeToString(
       const declarations = tuple.labeledElementDeclarations;
 
       const elements = typeArguments.map((type, i) => {
-        const resolved = typeToString(type, checker, visited, depth);
+        const resolved = typeToString(type, checker);
         const label = declarations?.[i];
         if (label) {
           const isRest = !!(label as ts.NamedTupleMember).dotDotDotToken;
@@ -156,10 +151,7 @@ function typeToString(
       target.symbol.name === "Array" ||
       target.symbol.name === "ReadonlyArray"
     ) {
-      const [elementType] = checker.getTypeArguments(reference);
-      const resolved = typeToString(elementType!, checker, visited, depth);
-      const isReadonly = target.symbol.name === "ReadonlyArray";
-      return isReadonly ? `readonly ${resolved}[]` : `${resolved}[]`;
+      return checker.typeToString(type);
     }
   }
 
@@ -172,15 +164,10 @@ function typeToString(
           .getParameters()
           .map((parameter) => {
             const parameterType = checker.getTypeOfSymbol(parameter);
-            return `${parameter.name}: ${typeToString(parameterType, checker, visited, depth)}`;
+            return `${parameter.name}: ${typeToString(parameterType, checker)}`;
           })
           .join(", ");
-        const returnType = typeToString(
-          signature.getReturnType(),
-          checker,
-          visited,
-          depth,
-        );
+        const returnType = typeToString(signature.getReturnType(), checker);
         return `(${parameters}) => ${returnType}`;
       })
       .join(" & ");
@@ -190,7 +177,7 @@ function typeToString(
   if (type.flags & ts.TypeFlags.Object) {
     const props = type.getProperties().map((prop) => {
       const propType = checker.getTypeOfSymbol(prop);
-      return `${prop.name}: ${typeToString(propType, checker, visited, depth)}`;
+      return `${prop.name}: ${typeToString(propType, checker)}`;
     });
     if (props.length > 0) {
       return `{ ${props.join("; ")} }`;
@@ -198,4 +185,12 @@ function typeToString(
   }
 
   return checker.typeToString(type);
+}
+
+function isBigIntLiteral(type: ts.Type): type is ts.BigIntLiteralType {
+  return !!(type.flags & ts.TypeFlags.BigIntLiteral);
+}
+
+function isTemplateLiteral(type: ts.Type): type is ts.TemplateLiteralType {
+  return !!(type.flags & ts.TypeFlags.TemplateLiteral);
 }
