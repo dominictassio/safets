@@ -19,5 +19,8 @@
     "prettier": "^3.8.3",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.4"
+  },
+  "dependencies": {
+    "ts-morph": "^28.0.0"
   }
 }
