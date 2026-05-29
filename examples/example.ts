@@ -9,7 +9,14 @@ type Name = [first: string, last: string];
 
 type Names = Name[];
 
-type Aged = { name: string; age: number };
+type Box<T> = {
+  value: T;
+  label?: string;
+};
+
+type Directory<T> = Record<string, Box<T>>;
+
+type Maybe<T> = T | null | undefined;
 
 class Researcher {
   constructor(
@@ -35,15 +42,10 @@ class GRA extends GradStudent {
   }
 }
 
-interface Parts {
-  [key: string]: string;
-}
-
 type Phone = `+${number} (${number}) ${number}-${number}`;
 
 type Who =
   | Phone
-  | Parts
   | Record<string, string>
   | Researcher
   | GRA
@@ -51,14 +53,37 @@ type Who =
   | Name
   | Names
   | { name: string; age: number }
-  | Aged
   | string
   | readonly string[]
   | Array<string>
-  | ``
-  | `+${number} (${number}) ${number}-${number}`
   | "World";
+
+type ContactDirectory = Directory<Person | Researcher | Name>;
+
+type CallableLookup = {
+  (value: string): string;
+  tags: Record<string, string>;
+};
+
+export interface Node {
+  next?: Node;
+}
 
 export function greet(who: Who) {
   console.log(`Hello, ${who}!`);
+}
+
+export function summarizeContacts(
+  contacts: ContactDirectory,
+): Maybe<Box<Names>> {
+  const firstContact = Object.values(contacts)[0];
+  return firstContact?.value instanceof Array ? firstContact : undefined;
+}
+
+export function lookupCallable(handler: CallableLookup) {
+  return handler;
+}
+
+export function demo(node: Node) {
+  return node;
 }
