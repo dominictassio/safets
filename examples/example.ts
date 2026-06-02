@@ -45,6 +45,7 @@ type Who =
   | Phone
   | Parts
   | Record<string, string>
+  | Record<"a" | "b", number>
   | Researcher
   | GRA
   | Person
@@ -62,3 +63,5 @@ type Who =
 export function greet(who: Who) {
   console.log(`Hello, ${who}!`);
 }
+
+export function tuple(t: [string, ...Array<number>, string]) {}
