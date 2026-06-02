@@ -1,4 +1,11 @@
-import ts from "typescript";
+import {
+  Project,
+  ts,
+  type Symbol,
+  type Type,
+  type TypeChecker,
+} from "ts-morph";
+import { typeToString, type Index, type ResolvedType } from "./types.ts";
 
 generateDocumentation(process.argv.slice(2), {
   target: ts.ScriptTarget.ESNext,
@@ -9,188 +16,185 @@ function generateDocumentation(
   fileNames: string[],
   options: ts.CompilerOptions,
 ): void {
-  // Build a program using the set of root file names in fileNames
-  const program = ts.createProgram(fileNames, options);
-  const checker = program.getTypeChecker();
+  const project = new Project({
+    compilerOptions: options,
+    skipAddingFilesFromTsConfig: true,
+  });
 
-  // Visit every sourceFile in the program
-  for (const sourceFile of program.getSourceFiles()) {
-    if (!sourceFile.isDeclarationFile) {
-      // Walk the tree to search for functions
-      ts.forEachChild(sourceFile, visit);
-    }
-  }
+  project.addSourceFilesAtPaths(fileNames);
+  project.resolveSourceFileDependencies();
 
-  return;
+  const checker = project.getTypeChecker();
 
-  /** visit nodes finding exported functions */
-  function visit(node: ts.Node) {
-    // Only consider exported nodes
-    if (!isNodeExported(node)) {
-      return;
+  for (const sourceFile of project.getSourceFiles()) {
+    if (sourceFile.isDeclarationFile()) {
+      continue;
     }
 
-    if (ts.isFunctionDeclaration(node) && node.name) {
-      const symbol = checker.getSymbolAtLocation(node.name);
-
-      if (symbol === undefined) {
-        return;
+    for (const functionDeclaration of sourceFile.getFunctions()) {
+      if (!functionDeclaration.isExported()) {
+        continue;
       }
 
-      const type = checker.getTypeOfSymbol(symbol);
-      console.log(typeToString(type, checker));
+      console.log(
+        typeToString(resolveType(functionDeclaration.getType(), checker)),
+      );
     }
-  }
-
-  /** True if this is visible outside this file, false otherwise */
-  function isNodeExported(node: ts.Node): boolean {
-    return (
-      (ts.getCombinedModifierFlags(node as ts.Declaration) &
-        ts.ModifierFlags.Export) !==
-        0 || node.parent.kind === ts.SyntaxKind.SourceFile
-    );
   }
 }
 
-function typeToString(type: ts.Type, checker: ts.TypeChecker): string {
-  // String literal: "Hello, World!"
-  if (type.isStringLiteral()) {
-    return `"${type.value}"`;
+function resolveType(type: Type, checker: TypeChecker): ResolvedType {
+  // Literal types
+  if (type.isBooleanLiteral()) {
+    return { kind: "literal", value: type.getText() === "true" };
   }
 
-  // Number literal: 42, 3.14, 0xff, 0.255e3
-  if (type.isNumberLiteral()) {
-    return String(type.value);
-  }
+  if (type.isBigIntLiteral()) {
+    const value = type.getLiteralValueOrThrow();
 
-  // BigInt literal: 9007199254740991n
-  if (isBigIntLiteral(type)) {
-    const { negative, base10Value } = type.value;
-    return `${negative ? "-" : ""}${base10Value}n`;
-  }
-
-  // Boolean literal: true or false
-  if (type.flags & ts.TypeFlags.BooleanLiteral) {
-    return (type as unknown as { intrinsicName: string }).intrinsicName;
-  }
-
-  // NOT WORKING
-  // Template literal: `+${number} $({number}) ${number}-${number}`
-  if (isTemplateLiteral(type)) {
-    const template: ts.TemplateLiteralType = type;
-    if (template.texts.length > 0) {
-      let result = template.texts[0] ?? "";
-      type.types.forEach((spanType, i) => {
-        result += `\${${typeToString(spanType, checker)}}`;
-        result += template.texts[i + 1] ?? "";
-      });
-      return `\`${result}\``;
-    } else {
-      return "``";
+    if (typeof value === "object") {
+      return {
+        kind: "literal",
+        value: BigInt(`${value.negative ? "-" : ""}${value.base10Value}`),
+      };
     }
+
+    return { kind: "literal", value: BigInt(value) };
   }
+
+  if (type.isStringLiteral() || type.isNumberLiteral()) {
+    const value = type.getLiteralValueOrThrow();
+
+    if (typeof value === "object") {
+      throw new Error(
+        "Unexpected object returned for string literal or number literal.",
+      );
+    }
+
+    return { kind: "literal", value };
+  }
+
+  if (type.isNull()) {
+    return { kind: "literal", value: null };
+  }
+
+  if (type.isUndefined()) {
+    return { kind: "literal", value: undefined };
+  }
+
+  type.getAliasSymbol();
 
   // Primitive types
   if (
-    type.flags &
-    (ts.TypeFlags.String |
-      ts.TypeFlags.Number |
-      ts.TypeFlags.Boolean |
-      ts.TypeFlags.BigInt |
-      ts.TypeFlags.Null |
-      ts.TypeFlags.Undefined |
-      ts.TypeFlags.Void |
-      ts.TypeFlags.Never |
-      ts.TypeFlags.Any |
-      ts.TypeFlags.Unknown)
+    type.isString() ||
+    type.isNumber() ||
+    type.isBoolean() ||
+    type.isBigInt() ||
+    type.isVoid() ||
+    type.isNever() ||
+    type.isAny() ||
+    type.isUnknown()
   ) {
-    return checker.typeToString(type);
+    return { kind: "primitive", name: type.getText() };
   }
 
-  type = checker.getApparentType(type);
+  type = type.getApparentType();
 
   // Union: A | B
   if (type.isUnion()) {
-    return type.types.map((t) => typeToString(t, checker)).join(" | ");
+    return {
+      kind: "union",
+      types: type.getUnionTypes().map((t) => resolveType(t, checker)),
+    };
   }
 
   // Intersection: A & B
   if (type.isIntersection()) {
-    return type.types.map((t) => typeToString(t, checker)).join(" & ");
+    return {
+      kind: "intersection",
+      types: type.getIntersectionTypes().map((t) => resolveType(t, checker)),
+    };
   }
 
-  if (
-    type.flags & ts.TypeFlags.Object &&
-    (type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference
-  ) {
-    const reference = type as ts.TypeReference;
-    const target = reference.target;
+  // Tuple: [A, B] or [a: A, b: B]
+  if (type.isTuple()) {
+    return {
+      kind: "tuple",
+      elements: type
+        .getTupleElements()
+        .map((t) => ({ type: resolveType(t, checker), rest: false })), // TODO: handle rest
+    };
+  }
 
-    // Tuple: [A, B] or [a: A, b: B]
-    if ((target as ts.ObjectType).objectFlags & ts.ObjectFlags.Tuple) {
-      const tuple = target as ts.TupleType;
-      const typeArguments = checker.getTypeArguments(reference);
-      const declarations = tuple.labeledElementDeclarations;
-
-      const elements = typeArguments.map((type, i) => {
-        const resolved = typeToString(type, checker);
-        const label = declarations?.[i];
-        if (label) {
-          const isRest = !!(label as ts.NamedTupleMember).dotDotDotToken;
-          const name = (label as ts.NamedTupleMember).name.getText();
-          return isRest ? `...${name}: ${resolved}` : `${name}: ${resolved}`;
-        }
-        return resolved;
-      });
-
-      return `[${elements.join(", ")}]`;
-    }
-
-    // Array: string[], readonly string[], Array<string>
-    if (
-      target.symbol.name === "Array" ||
-      target.symbol.name === "ReadonlyArray"
-    ) {
-      return checker.typeToString(type);
-    }
+  // Array: string[]
+  if (type.isArray()) {
+    return {
+      kind: "array",
+      element: resolveType(type.getArrayElementTypeOrThrow(), checker),
+    };
   }
 
   // Function
   const signatures = type.getCallSignatures();
   if (signatures.length > 0) {
-    return signatures
-      .map((signature) => {
-        const parameters = signature
-          .getParameters()
-          .map((parameter) => {
-            const parameterType = checker.getTypeOfSymbol(parameter);
-            return `${parameter.name}: ${typeToString(parameterType, checker)}`;
-          })
-          .join(", ");
-        const returnType = typeToString(signature.getReturnType(), checker);
-        return `(${parameters}) => ${returnType}`;
-      })
-      .join(" & ");
+    return {
+      kind: "function",
+      signatures: signatures.map((s) => ({
+        parameters: s.getParameters().map((p) => ({
+          name: p.getName(),
+          type: resolveSymbol(p, checker),
+        })),
+        returnType: resolveType(s.getReturnType(), checker),
+      })),
+    };
   }
 
-  // Object: { a: A, b: B}
-  if (type.flags & ts.TypeFlags.Object) {
-    const props = type.getProperties().map((prop) => {
-      const propType = checker.getTypeOfSymbol(prop);
-      return `${prop.name}: ${typeToString(propType, checker)}`;
-    });
-    if (props.length > 0) {
-      return `{ ${props.join("; ")} }`;
+  // Object: { a: A, b: B }
+  if (type.isObject()) {
+    // TODO: handle cases like `Record<"a" | "b", number>` where`type.getApparentType()` expands it
+    // into `{ a: string; b: string }` and the `a` and `b` properties have no source declaration
+    // that `Symbol.getValueDeclarationOrThrow()` can access.
+    const properties = type.getProperties().map((p) => ({
+      name: p.getName(),
+      type: resolveSymbol(p, checker),
+      optional: p.isOptional(),
+    }));
+
+    const indices: Index[] = [];
+
+    const stringIndexType = type.getStringIndexType();
+    if (stringIndexType !== undefined) {
+      indices.push({
+        key: "string",
+        value: resolveType(stringIndexType, checker),
+      });
+    }
+
+    const numberIndexType = type.getNumberIndexType();
+    if (numberIndexType !== undefined) {
+      indices.push({
+        key: "number",
+        value: resolveType(numberIndexType, checker),
+      });
+    }
+
+    if (properties.length > 0 || indices.length > 0) {
+      return {
+        kind: "object",
+        properties,
+        indices,
+      };
     }
   }
 
-  return checker.typeToString(type);
+  return { kind: "unsupported", value: type.getText() };
 }
 
-function isBigIntLiteral(type: ts.Type): type is ts.BigIntLiteralType {
-  return !!(type.flags & ts.TypeFlags.BigIntLiteral);
+function resolveSymbol(symbol: Symbol, checker: TypeChecker): ResolvedType {
+  return resolveType(getTypeOfSymbol(symbol, checker), checker);
 }
 
-function isTemplateLiteral(type: ts.Type): type is ts.TemplateLiteralType {
-  return !!(type.flags & ts.TypeFlags.TemplateLiteral);
+function getTypeOfSymbol(symbol: Symbol, checker: TypeChecker): Type {
+  const declaration = symbol.getValueDeclarationOrThrow();
+  return checker.getTypeOfSymbolAtLocation(symbol, declaration);
 }
