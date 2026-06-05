@@ -5,14 +5,19 @@ import {
   type Type,
   type TypeChecker,
 } from "ts-morph";
-import { typeToString, type Index, type ResolvedType } from "./types.ts";
+import {
+  makeCheck,
+  typeToString,
+  type Index,
+  type ResolvedType,
+} from "./types.ts";
 
-generateDocumentation(process.argv.slice(2), {
+emitTypeChecks(process.argv.slice(2), {
   target: ts.ScriptTarget.ESNext,
   module: ts.ModuleKind.NodeNext,
 });
 
-function generateDocumentation(
+function emitTypeChecks(
   fileNames: string[],
   options: ts.CompilerOptions,
 ): void {
@@ -36,9 +41,23 @@ function generateDocumentation(
         continue;
       }
 
-      console.log(
-        typeToString(resolveType(functionDeclaration.getType(), checker)),
-      );
+      const withChecks = functionDeclaration.setBodyText((writer) => {
+        functionDeclaration.getParameters().map((p) => {
+          const name = p.getName();
+          const type = resolveType(p.getType(), checker);
+          const check = makeCheck(name, type);
+
+          writer.write(`if (!(${check}))`).block(() => {
+            writer.writeLine(
+              `throw new Error(\`TYPE ERROR: Parameter '${name}' is of type '${typeToString(type)}', but has a value of \${${name}}\`)`,
+            );
+          });
+        });
+
+        writer.write(functionDeclaration.getBodyText() ?? "");
+      });
+
+      console.log(withChecks.getText());
     }
   }
 }
