@@ -143,3 +143,69 @@ function propertyToString(property: Property): string {
 function indexToString(index: Index): string {
   return `[key: ${index.key}]: ${typeToString(index.value)}`;
 }
+
+export function makeCheck(parameter: string, type: ResolvedType): string {
+  switch (type.kind) {
+    case "literal":
+      if (type.value === null) {
+        return `${parameter} === null`;
+      }
+      if (type.value === undefined) {
+        return `${parameter} === undefined`;
+      }
+      if (typeof type.value === "bigint") {
+        return `${parameter} === ${type.value.toString()}n`;
+      }
+      return `${parameter} === ${type.value.toString()}`;
+
+    case "template":
+      return "true";
+
+    case "primitive":
+      if (type.name === "void") {
+        return `(${parameter} === null || ${parameter} === undefined)`;
+      }
+      if (type.name === "never") {
+        return "false";
+      }
+      if (type.name === "any" || type.name === "unknown") {
+        return "true";
+      }
+      return `typeof ${parameter} === "${type.name}"`;
+
+    case "union": {
+      const typeChecks = type.types.map((t) => makeCheck(parameter, t));
+      return `(${typeChecks.join(" || ")})`;
+    }
+
+    case "intersection": {
+      const typeChecks = type.types.map((t) => makeCheck(parameter, t));
+      return `(${typeChecks.join(" && ")})`;
+    }
+
+    case "tuple": {
+      const typeChecks = type.elements.map((e, i) =>
+        makeCheck(`${parameter}[${i.toString()}]`, e.type),
+      );
+      return `(${typeChecks.join(" && ")})`;
+    }
+
+    case "array":
+      return `(Array.isArray(${parameter}) && ${parameter}.every((e) => ${makeCheck("e", type.element)}))`;
+
+    case "function":
+      return `typeof ${parameter} === "function"`;
+
+    case "object": {
+      const typeChecks = type.properties.map((p) =>
+        p.optional
+          ? `(${parameter}["${p.name}"] === undefined || ${makeCheck(`${parameter}["${p.name}"]`, p.type)})`
+          : makeCheck(`${parameter}["${p.name}"]`, p.type),
+      );
+      return `(${[`typeof ${parameter} === "object"`, ...typeChecks].join(" && ")})`;
+    }
+
+    case "unsupported":
+      return "false";
+  }
+}
