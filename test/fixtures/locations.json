@@ -1,0 +1,16 @@
+[
+  {
+    "function": {
+      "fileLocation": "test/fixtures/locations.ts",
+      "startLine": 1,
+      "startColumn": 1
+    },
+    "parameters": [
+      {
+        "fileLocation": "test/fixtures/locations.ts",
+        "startLine": 1,
+        "startColumn": 45
+      }
+    ]
+  }
+]

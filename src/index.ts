@@ -1,11 +1,16 @@
 import {
   Node,
   Project,
+  SyntaxKind,
   ts,
+  type FunctionDeclaration,
+  type ParameterDeclaration,
   type Symbol,
   type Type,
   type TypeChecker,
 } from "ts-morph";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   makeCheck,
   typeToString,
@@ -22,22 +27,231 @@ const boxedPrimitiveNames: ReadonlyMap<string, BoxedPrimitiveName> = new Map([
   ["Symbol", "symbol"],
 ]);
 
-emitTypeChecks(process.argv.slice(2), {
+const compilerOptions = {
   target: ts.ScriptTarget.ESNext,
   module: ts.ModuleKind.NodeNext,
-});
+};
 
-function emitTypeChecks(
-  fileNames: string[],
+const arguments_ = process.argv.slice(2);
+const locationInput = getLocationInput(arguments_);
+
+if (locationInput === undefined) {
+  emitTypeChecks(arguments_, compilerOptions);
+} else {
+  emitSelectedTypeChecks(parseTargets(locationInput), compilerOptions);
+}
+
+interface SourceLocation {
+  fileLocation: string;
+  startLine: number;
+  startColumn: number;
+}
+
+interface RuntimeCheckTarget {
+  function: SourceLocation;
+  parameters: readonly SourceLocation[];
+}
+
+interface SelectedFunction {
+  declaration: FunctionDeclaration;
+  parameters: ParameterDeclaration[];
+}
+
+function getLocationInput(arguments_: readonly string[]): string | undefined {
+  if (arguments_[0] === "--locations") {
+    if (arguments_.length !== 2) {
+      throw new Error("Usage: safets --locations <JSON, JSON file, or ->");
+    }
+    return readLocationArgument(arguments_[1]);
+  }
+
+  if (arguments_.length !== 1) {
+    return undefined;
+  }
+
+  const argument = arguments_[0];
+  if (argument.trimStart().startsWith("[")) {
+    return argument;
+  }
+  if (argument.endsWith(".json") || argument === "-") {
+    return readLocationInput(argument);
+  }
+
+  return undefined;
+}
+
+function readLocationInput(input: string): string {
+  return input === "-" ? readFileSync(0, "utf8") : readFileSync(input, "utf8");
+}
+
+function readLocationArgument(input: string): string {
+  return input.trimStart().startsWith("[") ? input : readLocationInput(input);
+}
+
+function parseTargets(json: string): RuntimeCheckTarget[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(json) as unknown;
+  } catch (error) {
+    throw new Error("Could not parse runtime-check locations as JSON.", {
+      cause: error,
+    });
+  }
+
+  if (!Array.isArray(value)) {
+    throw new TypeError("Runtime-check locations must be a JSON array.");
+  }
+
+  return value.map((target, index) => parseTarget(target, index));
+}
+
+function parseTarget(value: unknown, index: number): RuntimeCheckTarget {
+  if (!isObject(value)) {
+    throw new TypeError(
+      `Location target at index ${index.toString()} must be an object.`,
+    );
+  }
+  if (!Array.isArray(value.parameters)) {
+    throw new TypeError(
+      `Location target at index ${index.toString()} must contain a parameters array.`,
+    );
+  }
+
+  return {
+    function: parseLocation(
+      value.function,
+      `target ${index.toString()} function`,
+    ),
+    parameters: value.parameters.map((parameter, parameterIndex) =>
+      parseLocation(
+        parameter,
+        `target ${index.toString()} parameter ${parameterIndex.toString()}`,
+      ),
+    ),
+  };
+}
+
+function parseLocation(value: unknown, description: string): SourceLocation {
+  if (
+    !isObject(value) ||
+    typeof value.fileLocation !== "string" ||
+    value.fileLocation.length === 0 ||
+    !Number.isInteger(value.startLine) ||
+    !Number.isInteger(value.startColumn) ||
+    (value.startLine as number) < 1 ||
+    (value.startColumn as number) < 1
+  ) {
+    throw new TypeError(
+      `The ${description} must have a non-empty fileLocation and positive integer startLine and startColumn.`,
+    );
+  }
+
+  return {
+    fileLocation: value.fileLocation,
+    startLine: value.startLine as number,
+    startColumn: value.startColumn as number,
+  };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function emitSelectedTypeChecks(
+  targets: readonly RuntimeCheckTarget[],
   options: ts.CompilerOptions,
 ): void {
+  const project = createProject(
+    targets.flatMap((target) => [
+      target.function.fileLocation,
+      ...target.parameters.map((parameter) => parameter.fileLocation),
+    ]),
+    options,
+  );
+  const checker = project.getTypeChecker();
+  const selectedFunctions = new Map<FunctionDeclaration, SelectedFunction>();
+
+  for (const target of targets) {
+    const sourceFile = project.getSourceFile(
+      resolve(target.function.fileLocation),
+    );
+    if (sourceFile === undefined) {
+      throw new Error(
+        `Could not find source file '${target.function.fileLocation}'.`,
+      );
+    }
+
+    const declaration = sourceFile
+      .getDescendantsOfKind(SyntaxKind.FunctionDeclaration)
+      .find((candidate) => isAtLocation(candidate, target.function));
+    if (declaration === undefined) {
+      throw new Error(
+        `Could not find a function declaration at ${formatLocation(target.function)}.`,
+      );
+    }
+
+    let selectedFunction = selectedFunctions.get(declaration);
+    if (selectedFunction === undefined) {
+      selectedFunction = { declaration, parameters: [] };
+      selectedFunctions.set(declaration, selectedFunction);
+    }
+
+    for (const parameterLocation of target.parameters) {
+      const parameter = declaration
+        .getParameters()
+        .find((candidate) => isAtLocation(candidate, parameterLocation));
+      if (parameter === undefined) {
+        throw new Error(
+          `Could not find a parameter of the function at ${formatLocation(target.function)} at ${formatLocation(parameterLocation)}.`,
+        );
+      }
+      if (!selectedFunction.parameters.includes(parameter)) {
+        selectedFunction.parameters.push(parameter);
+      }
+    }
+  }
+
+  for (const { declaration, parameters } of selectedFunctions.values()) {
+    emitFunctionWithChecks(declaration, parameters, checker);
+  }
+}
+
+function isAtLocation(node: Node, location: SourceLocation): boolean {
+  if (node.getSourceFile().getFilePath() !== resolve(location.fileLocation)) {
+    return false;
+  }
+
+  const actual = node.getSourceFile().getLineAndColumnAtPos(node.getStart());
+  return (
+    actual.line === location.startLine && actual.column === location.startColumn
+  );
+}
+
+function formatLocation(location: SourceLocation): string {
+  return `'${location.fileLocation}:${location.startLine.toString()}:${location.startColumn.toString()}'`;
+}
+
+function createProject(
+  fileNames: readonly string[],
+  options: ts.CompilerOptions,
+): Project {
   const project = new Project({
     compilerOptions: options,
     skipAddingFilesFromTsConfig: true,
   });
 
-  project.addSourceFilesAtPaths(fileNames);
+  project.addSourceFilesAtPaths([
+    ...new Set(fileNames.map((name) => resolve(name))),
+  ]);
   project.resolveSourceFileDependencies();
+  return project;
+}
+
+function emitTypeChecks(
+  fileNames: string[],
+  options: ts.CompilerOptions,
+): void {
+  const project = createProject(fileNames, options);
 
   const checker = project.getTypeChecker();
 
@@ -51,25 +265,46 @@ function emitTypeChecks(
         continue;
       }
 
-      const withChecks = functionDeclaration.setBodyText((writer) => {
-        functionDeclaration.getParameters().map((p) => {
-          const name = p.getName();
-          const type = resolveType(p.getType(), checker, functionDeclaration);
-          const check = makeCheck(name, type);
-
-          writer.write(`if (!(${check}))`).block(() => {
-            writer.writeLine(
-              `throw new Error(\`TYPE ERROR: Parameter '${name}' is of type '${typeToString(type)}', but has a value of \${${name}}\`)`,
-            );
-          });
-        });
-
-        writer.write(functionDeclaration.getBodyText() ?? "");
-      });
-
-      console.log(withChecks.getText());
+      emitFunctionWithChecks(
+        functionDeclaration,
+        functionDeclaration.getParameters(),
+        checker,
+      );
     }
   }
+}
+
+function emitFunctionWithChecks(
+  functionDeclaration: FunctionDeclaration,
+  parameters: readonly ParameterDeclaration[],
+  checker: TypeChecker,
+): void {
+  const bodyText = functionDeclaration.getBodyText();
+  if (bodyText === undefined) {
+    throw new Error(
+      `Cannot add runtime checks to the function at '${functionDeclaration.getSourceFile().getFilePath()}:${functionDeclaration.getStartLineNumber().toString()}' because it has no body.`,
+    );
+  }
+
+  const checks = parameters.map((parameter) => {
+    const name = parameter.getName();
+    const type = resolveType(parameter.getType(), checker, functionDeclaration);
+    return { name, type, check: makeCheck(name, type) };
+  });
+
+  const withChecks = functionDeclaration.setBodyText((writer) => {
+    for (const check of checks) {
+      writer.write(`if (!(${check.check}))`).block(() => {
+        writer.writeLine(
+          `throw new Error(\`TYPE ERROR: Parameter '${check.name}' is of type '${typeToString(check.type)}', but has a value of \${${check.name}}\`)`,
+        );
+      });
+    }
+
+    writer.write(bodyText);
+  });
+
+  console.log(withChecks.getText());
 }
 
 function resolveType(
