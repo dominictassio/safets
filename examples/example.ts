@@ -41,7 +41,10 @@ interface Parts {
 
 type Phone = `+${number} (${number}) ${number}-${number}`;
 
+type Box<T> = { value: T };
+
 type Who =
+  | Box<string>
   | Phone
   | Parts
   | Record<string, string>
