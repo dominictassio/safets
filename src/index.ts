@@ -1,4 +1,5 @@
 import {
+  Node,
   Project,
   ts,
   type Symbol,
@@ -62,7 +63,11 @@ function emitTypeChecks(
   }
 }
 
-function resolveType(type: Type, checker: TypeChecker): ResolvedType {
+function resolveType(
+  type: Type,
+  checker: TypeChecker,
+  location: Node,
+): ResolvedType {
   // Literal types
   if (type.isBooleanLiteral()) {
     return { kind: "literal", value: type.getText() === "true" };
@@ -123,7 +128,7 @@ function resolveType(type: Type, checker: TypeChecker): ResolvedType {
   if (type.isUnion()) {
     return {
       kind: "union",
-      types: type.getUnionTypes().map((t) => resolveType(t, checker)),
+      types: type.getUnionTypes().map((t) => resolveType(t, checker, location)),
     };
   }
 
@@ -131,7 +136,9 @@ function resolveType(type: Type, checker: TypeChecker): ResolvedType {
   if (type.isIntersection()) {
     return {
       kind: "intersection",
-      types: type.getIntersectionTypes().map((t) => resolveType(t, checker)),
+      types: type
+        .getIntersectionTypes()
+        .map((t) => resolveType(t, checker, location)),
     };
   }
 
@@ -141,7 +148,7 @@ function resolveType(type: Type, checker: TypeChecker): ResolvedType {
       kind: "tuple",
       elements: type
         .getTupleElements()
-        .map((t) => ({ type: resolveType(t, checker), rest: false })), // TODO: handle rest
+        .map((t) => ({ type: resolveType(t, checker, location), rest: false })), // TODO: handle rest
     };
   }
 
@@ -149,7 +156,11 @@ function resolveType(type: Type, checker: TypeChecker): ResolvedType {
   if (type.isArray()) {
     return {
       kind: "array",
-      element: resolveType(type.getArrayElementTypeOrThrow(), checker),
+      element: resolveType(
+        type.getArrayElementTypeOrThrow(),
+        checker,
+        location,
+      ),
     };
   }
 
@@ -161,9 +172,9 @@ function resolveType(type: Type, checker: TypeChecker): ResolvedType {
       signatures: signatures.map((s) => ({
         parameters: s.getParameters().map((p) => ({
           name: p.getName(),
-          type: resolveSymbol(p, checker),
+          type: resolveSymbol(p, checker, location),
         })),
-        returnType: resolveType(s.getReturnType(), checker),
+        returnType: resolveType(s.getReturnType(), checker, location),
       })),
     };
   }
@@ -175,7 +186,7 @@ function resolveType(type: Type, checker: TypeChecker): ResolvedType {
     // that `Symbol.getValueDeclarationOrThrow()` can access.
     const properties = type.getProperties().map((p) => ({
       name: p.getName(),
-      type: resolveSymbol(p, checker),
+      type: resolveSymbol(p, checker, location),
       optional: p.isOptional(),
     }));
 
@@ -185,7 +196,7 @@ function resolveType(type: Type, checker: TypeChecker): ResolvedType {
     if (stringIndexType !== undefined) {
       indices.push({
         key: "string",
-        value: resolveType(stringIndexType, checker),
+        value: resolveType(stringIndexType, checker, location),
       });
     }
 
@@ -193,7 +204,7 @@ function resolveType(type: Type, checker: TypeChecker): ResolvedType {
     if (numberIndexType !== undefined) {
       indices.push({
         key: "number",
-        value: resolveType(numberIndexType, checker),
+        value: resolveType(numberIndexType, checker, location),
       });
     }
 
@@ -209,11 +220,15 @@ function resolveType(type: Type, checker: TypeChecker): ResolvedType {
   return { kind: "unsupported", value: type.getText() };
 }
 
-function resolveSymbol(symbol: Symbol, checker: TypeChecker): ResolvedType {
-  return resolveType(getTypeOfSymbol(symbol, checker), checker);
-}
-
-function getTypeOfSymbol(symbol: Symbol, checker: TypeChecker): Type {
-  const declaration = symbol.getValueDeclarationOrThrow();
-  return checker.getTypeOfSymbolAtLocation(symbol, declaration);
+function resolveSymbol(
+  symbol: Symbol,
+  checker: TypeChecker,
+  location: Node,
+): ResolvedType {
+  const declaration = symbol.getValueDeclaration();
+  const type = checker.getTypeOfSymbolAtLocation(
+    symbol,
+    declaration ?? location,
+  );
+  return resolveType(type, checker, location);
 }
