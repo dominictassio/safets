@@ -1,5 +1,6 @@
 export type ResolvedType =
   | PrimitiveType
+  | BoxedPrimitiveType
   | LiteralType
   | UnionType
   | IntersectionType
@@ -13,6 +14,18 @@ export type ResolvedType =
 export interface PrimitiveType {
   kind: "primitive";
   name: string;
+}
+
+export type BoxedPrimitiveName =
+  | "string"
+  | "number"
+  | "boolean"
+  | "bigint"
+  | "symbol";
+
+export interface BoxedPrimitiveType {
+  kind: "boxed-primitive";
+  name: BoxedPrimitiveName;
 }
 
 export interface LiteralType {
@@ -102,6 +115,8 @@ export function typeToString(type: ResolvedType): string {
       return "`...`";
     case "primitive":
       return type.name;
+    case "boxed-primitive":
+      return boxedPrimitiveDisplayName(type.name);
     case "union":
       return type.types.map(typeToString).join(" | ");
     case "intersection":
@@ -173,6 +188,9 @@ export function makeCheck(parameter: string, type: ResolvedType): string {
       }
       return `typeof ${parameter} === "${type.name}"`;
 
+    case "boxed-primitive":
+      return `Object.prototype.toString.call(${parameter}) === "[object ${boxedPrimitiveDisplayName(type.name)}]"`;
+
     case "union": {
       const typeChecks = type.types.map((t) => makeCheck(parameter, t));
       return `(${typeChecks.join(" || ")})`;
@@ -207,5 +225,20 @@ export function makeCheck(parameter: string, type: ResolvedType): string {
 
     case "unsupported":
       return "false";
+  }
+}
+
+function boxedPrimitiveDisplayName(name: BoxedPrimitiveName): string {
+  switch (name) {
+    case "string":
+      return "String";
+    case "number":
+      return "Number";
+    case "boolean":
+      return "Boolean";
+    case "bigint":
+      return "BigInt";
+    case "symbol":
+      return "Symbol";
   }
 }

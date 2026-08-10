@@ -9,9 +9,18 @@ import {
 import {
   makeCheck,
   typeToString,
+  type BoxedPrimitiveName,
   type Index,
   type ResolvedType,
 } from "./types.ts";
+
+const boxedPrimitiveNames: ReadonlyMap<string, BoxedPrimitiveName> = new Map([
+  ["String", "string"],
+  ["Number", "number"],
+  ["Boolean", "boolean"],
+  ["BigInt", "bigint"],
+  ["Symbol", "symbol"],
+]);
 
 emitTypeChecks(process.argv.slice(2), {
   target: ts.ScriptTarget.ESNext,
@@ -45,7 +54,7 @@ function emitTypeChecks(
       const withChecks = functionDeclaration.setBodyText((writer) => {
         functionDeclaration.getParameters().map((p) => {
           const name = p.getName();
-          const type = resolveType(p.getType(), checker);
+          const type = resolveType(p.getType(), checker, functionDeclaration);
           const check = makeCheck(name, type);
 
           writer.write(`if (!(${check}))`).block(() => {
@@ -104,6 +113,11 @@ function resolveType(
 
   if (type.isUndefined()) {
     return { kind: "literal", value: undefined };
+  }
+
+  const boxedPrimitiveName = getBoxedPrimitiveName(type, location);
+  if (boxedPrimitiveName !== undefined) {
+    return { kind: "boxed-primitive", name: boxedPrimitiveName };
   }
 
   type.getAliasSymbol();
@@ -231,4 +245,27 @@ function resolveSymbol(
     declaration ?? location,
   );
   return resolveType(type, checker, location);
+}
+
+function getBoxedPrimitiveName(
+  type: Type,
+  location: Node,
+): BoxedPrimitiveName | undefined {
+  const symbol = type.getSymbol();
+  if (symbol === undefined) {
+    return undefined;
+  }
+
+  const name = boxedPrimitiveNames.get(symbol.getName());
+  if (name === undefined) {
+    return undefined;
+  }
+
+  const program = location.getProject().getProgram().compilerObject;
+  const isDefaultLibraryType = symbol.getDeclarations().some((declaration) => {
+    const sourceFile = declaration.getSourceFile();
+    return program.isSourceFileDefaultLibrary(sourceFile.compilerNode);
+  });
+
+  return isDefaultLibraryType ? name : undefined;
 }
