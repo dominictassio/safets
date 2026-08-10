@@ -5,17 +5,54 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
+interface RuntimeChecksOutput {
+  schemaVersion: number;
+  functions: {
+    functionLocation: SourceLocation;
+    checks: {
+      parameterLocation: SourceLocation;
+      parameterName: string;
+      expectedType: string;
+      condition: string;
+      code: string;
+    }[];
+  }[];
+}
+
+interface SourceLocation {
+  fileLocation: string;
+  startLine: number;
+  startColumn: number;
+}
+
 void test("the CLI accepts locations from a JSON file", () => {
-  const output = execFileSync(
+  const outputText = execFileSync(
     process.execPath,
     ["src/index.ts", "test/fixtures/locations.json"],
     { cwd: projectRoot, encoding: "utf8" },
   );
+  const output = JSON.parse(outputText) as RuntimeChecksOutput;
 
-  assert.match(output, /typeof checked === "string"/);
-  assert.doesNotMatch(output, /typeof unchecked === "number"/);
-  assert.doesNotMatch(output, /function (?:selected|unselected)/);
-  assert.doesNotMatch(output, /return unchecked/);
+  assert.equal(output.schemaVersion, 1);
+  assert.equal(output.functions.length, 1);
+  assert.deepEqual(output.functions[0]?.functionLocation, {
+    fileLocation: "test/fixtures/locations.ts",
+    startLine: 1,
+    startColumn: 1,
+  });
+  assert.deepEqual(output.functions[0]?.checks[0], {
+    parameterLocation: {
+      fileLocation: "test/fixtures/locations.ts",
+      startLine: 1,
+      startColumn: 45,
+    },
+    parameterName: "checked",
+    expectedType: "string",
+    condition: 'typeof checked === "string"',
+    code: `if (!(typeof checked === "string")) {
+  throw new Error(\`TYPE ERROR: Parameter 'checked' is of type 'string', but has a value of \${checked}\`);
+}`,
+  });
 });
 
 void test("the CLI accepts an inline JSON location array", () => {
@@ -35,13 +72,19 @@ void test("the CLI accepts an inline JSON location array", () => {
       ],
     },
   ];
-  const output = execFileSync(
+  const outputText = execFileSync(
     process.execPath,
     ["src/index.ts", JSON.stringify(locations)],
     { cwd: projectRoot, encoding: "utf8" },
   );
+  const output = JSON.parse(outputText) as RuntimeChecksOutput;
 
-  assert.match(output, /typeof value === "boolean"/);
-  assert.doesNotMatch(output, /function (?:selected|unselected)/);
-  assert.doesNotMatch(output, /return value/);
+  assert.equal(output.functions.length, 1);
+  assert.equal(output.functions[0]?.checks.length, 1);
+  assert.equal(output.functions[0]?.checks[0]?.parameterName, "value");
+  assert.equal(output.functions[0]?.checks[0]?.expectedType, "boolean");
+  assert.equal(
+    output.functions[0]?.checks[0]?.condition,
+    'typeof value === "boolean"',
+  );
 });

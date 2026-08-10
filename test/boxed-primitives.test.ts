@@ -12,6 +12,12 @@ import {
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
+interface RuntimeChecksOutput {
+  functions: {
+    checks: { condition: string }[];
+  }[];
+}
+
 const boxedTypes = [
   {
     name: "string",
@@ -99,13 +105,16 @@ void test("the CLI resolves standard boxed types without expanding them", () => 
     ["src/index.ts", "test/fixtures/boxed.ts"],
     { cwd: projectRoot, encoding: "utf8" },
   );
+  const conditions = getConditions(output);
 
   for (const boxedType of boxedTypes) {
-    assert.match(
-      output,
-      new RegExp(
-        `Object\\.prototype\\.toString\\.call\\([^)]+\\) === "\\[object ${boxedType.displayName}\\]"`,
+    assert.ok(
+      conditions.some((condition) =>
+        new RegExp(
+          `Object\\.prototype\\.toString\\.call\\([^)]+\\) === "\\[object ${boxedType.displayName}\\]"`,
+        ).test(condition),
       ),
+      boxedType.name,
     );
   }
 });
@@ -116,16 +125,24 @@ void test("user-defined types with boxed primitive names remain structural", () 
     ["src/index.ts", "test/fixtures/boxed.ts"],
     { cwd: projectRoot, encoding: "utf8" },
   );
+  const conditions = getConditions(output).join("\n");
 
   assert.match(
-    output,
+    conditions,
     /typeof value === "object" && typeof value\["value"\] === "string"/,
   );
   assert.doesNotMatch(
-    output,
+    conditions,
     /Object\.prototype\.toString\.call\(value\) === "\[object String\]"/,
   );
 });
+
+function getConditions(output: string): string[] {
+  const parsed = JSON.parse(output) as RuntimeChecksOutput;
+  return parsed.functions.flatMap((functionChecks) =>
+    functionChecks.checks.map((check) => check.condition),
+  );
+}
 
 function evaluateCheck(check: string, value: unknown): boolean {
   const result = vm.runInNewContext(`Boolean(${check})`, { value }) as unknown;

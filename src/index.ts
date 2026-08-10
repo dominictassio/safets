@@ -10,7 +10,7 @@ import {
   type TypeChecker,
 } from "ts-morph";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import {
   makeCheck,
   typeToString,
@@ -35,11 +35,12 @@ const compilerOptions = {
 const arguments_ = process.argv.slice(2);
 const locationInput = getLocationInput(arguments_);
 
-if (locationInput === undefined) {
-  emitTypeChecks(arguments_, compilerOptions);
-} else {
-  emitSelectedTypeChecks(parseTargets(locationInput), compilerOptions);
-}
+const output =
+  locationInput === undefined
+    ? generateTypeChecks(arguments_, compilerOptions)
+    : generateSelectedTypeChecks(parseTargets(locationInput), compilerOptions);
+
+console.log(JSON.stringify(output, undefined, 2));
 
 interface SourceLocation {
   fileLocation: string;
@@ -54,7 +55,31 @@ interface RuntimeCheckTarget {
 
 interface SelectedFunction {
   declaration: FunctionDeclaration;
-  parameters: ParameterDeclaration[];
+  functionLocation: SourceLocation;
+  parameters: SelectedParameter[];
+}
+
+interface SelectedParameter {
+  declaration: ParameterDeclaration;
+  parameterLocation: SourceLocation;
+}
+
+interface RuntimeChecksOutput {
+  schemaVersion: 1;
+  functions: FunctionChecks[];
+}
+
+interface FunctionChecks {
+  functionLocation: SourceLocation;
+  checks: ParameterCheck[];
+}
+
+interface ParameterCheck {
+  parameterLocation: SourceLocation;
+  parameterName: string;
+  expectedType: string;
+  condition: string;
+  code: string;
 }
 
 function getLocationInput(arguments_: readonly string[]): string | undefined {
@@ -157,10 +182,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function emitSelectedTypeChecks(
+function generateSelectedTypeChecks(
   targets: readonly RuntimeCheckTarget[],
   options: ts.CompilerOptions,
-): void {
+): RuntimeChecksOutput {
   const project = createProject(
     targets.flatMap((target) => [
       target.function.fileLocation,
@@ -192,7 +217,11 @@ function emitSelectedTypeChecks(
 
     let selectedFunction = selectedFunctions.get(declaration);
     if (selectedFunction === undefined) {
-      selectedFunction = { declaration, parameters: [] };
+      selectedFunction = {
+        declaration,
+        functionLocation: target.function,
+        parameters: [],
+      };
       selectedFunctions.set(declaration, selectedFunction);
     }
 
@@ -205,15 +234,28 @@ function emitSelectedTypeChecks(
           `Could not find a parameter of the function at ${formatLocation(target.function)} at ${formatLocation(parameterLocation)}.`,
         );
       }
-      if (!selectedFunction.parameters.includes(parameter)) {
-        selectedFunction.parameters.push(parameter);
+      if (
+        !selectedFunction.parameters.some(
+          (selected) => selected.declaration === parameter,
+        )
+      ) {
+        selectedFunction.parameters.push({
+          declaration: parameter,
+          parameterLocation,
+        });
       }
     }
   }
 
-  for (const { declaration, parameters } of selectedFunctions.values()) {
-    emitRuntimeChecks(declaration, parameters, checker);
-  }
+  return {
+    schemaVersion: 1,
+    functions: [...selectedFunctions.values()].map(
+      ({ declaration, functionLocation, parameters }) => ({
+        functionLocation,
+        checks: generateRuntimeChecks(declaration, parameters, checker),
+      }),
+    ),
+  };
 }
 
 function isAtLocation(node: Node, location: SourceLocation): boolean {
@@ -247,13 +289,13 @@ function createProject(
   return project;
 }
 
-function emitTypeChecks(
+function generateTypeChecks(
   fileNames: string[],
   options: ts.CompilerOptions,
-): void {
+): RuntimeChecksOutput {
   const project = createProject(fileNames, options);
-
   const checker = project.getTypeChecker();
+  const functions: FunctionChecks[] = [];
 
   for (const sourceFile of project.getSourceFiles()) {
     if (sourceFile.isDeclarationFile()) {
@@ -265,31 +307,61 @@ function emitTypeChecks(
         continue;
       }
 
-      emitRuntimeChecks(
-        functionDeclaration,
-        functionDeclaration.getParameters(),
-        checker,
-      );
+      functions.push({
+        functionLocation: getLocation(functionDeclaration),
+        checks: generateRuntimeChecks(
+          functionDeclaration,
+          functionDeclaration.getParameters().map((parameter) => ({
+            declaration: parameter,
+            parameterLocation: getLocation(parameter),
+          })),
+          checker,
+        ),
+      });
     }
   }
+
+  return { schemaVersion: 1, functions };
 }
 
-function emitRuntimeChecks(
-  functionDeclaration: FunctionDeclaration,
-  parameters: readonly ParameterDeclaration[],
-  checker: TypeChecker,
-): void {
-  const checks = parameters.map((parameter) => {
-    const name = parameter.getName();
-    const type = resolveType(parameter.getType(), checker, functionDeclaration);
-    return { name, type, check: makeCheck(name, type) };
-  });
+function getLocation(node: Node): SourceLocation {
+  const sourceFile = node.getSourceFile();
+  const position = sourceFile.getLineAndColumnAtPos(node.getStart());
+  return {
+    fileLocation: relative(process.cwd(), sourceFile.getFilePath())
+      .split(sep)
+      .join("/"),
+    startLine: position.line,
+    startColumn: position.column,
+  };
+}
 
-  for (const check of checks) {
-    console.log(`if (!(${check.check})) {
-    throw new Error(\`TYPE ERROR: Parameter '${check.name}' is of type '${typeToString(check.type)}', but has a value of \${${check.name}}\`)
-}`);
-  }
+function generateRuntimeChecks(
+  functionDeclaration: FunctionDeclaration,
+  parameters: readonly SelectedParameter[],
+  checker: TypeChecker,
+): ParameterCheck[] {
+  return parameters.map(({ declaration, parameterLocation }) => {
+    const parameterName = declaration.getName();
+    const type = resolveType(
+      declaration.getType(),
+      checker,
+      functionDeclaration,
+    );
+    const expectedType = typeToString(type);
+    const condition = makeCheck(parameterName, type);
+    const code = `if (!(${condition})) {
+  throw new Error(\`TYPE ERROR: Parameter '${parameterName}' is of type '${expectedType}', but has a value of \${${parameterName}}\`);
+}`;
+
+    return {
+      parameterLocation,
+      parameterName,
+      expectedType,
+      condition,
+      code,
+    };
+  });
 }
 
 function resolveType(
