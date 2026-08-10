@@ -18,6 +18,35 @@ interface RuntimeChecksOutput {
   }[];
 }
 
+const boxedLocations = JSON.stringify([
+  {
+    function: {
+      fileLocation: "test/fixtures/boxed.ts",
+      startLine: 1,
+      startColumn: 1,
+    },
+    parameters: [2, 3, 4, 5, 6].map((startLine) => ({
+      fileLocation: "test/fixtures/boxed.ts",
+      startLine,
+      startColumn: 3,
+    })),
+  },
+  {
+    function: {
+      fileLocation: "test/fixtures/boxed.ts",
+      startLine: 15,
+      startColumn: 1,
+    },
+    parameters: [
+      {
+        fileLocation: "test/fixtures/boxed.ts",
+        startLine: 15,
+        startColumn: 30,
+      },
+    ],
+  },
+]);
+
 const boxedTypes = [
   {
     name: "string",
@@ -102,7 +131,7 @@ void test("boxed primitive checks accept primitive and boxed values", () => {
 void test("the CLI resolves standard boxed types without expanding them", () => {
   const output = execFileSync(
     process.execPath,
-    ["src/index.ts", "test/fixtures/boxed.ts"],
+    ["src/index.ts", projectRoot, boxedLocations],
     { cwd: projectRoot, encoding: "utf8" },
   );
   const conditions = getConditions(output);
@@ -122,7 +151,7 @@ void test("the CLI resolves standard boxed types without expanding them", () => 
 void test("user-defined types with boxed primitive names remain structural", () => {
   const output = execFileSync(
     process.execPath,
-    ["src/index.ts", "test/fixtures/boxed.ts"],
+    ["src/index.ts", projectRoot, boxedLocations],
     { cwd: projectRoot, encoding: "utf8" },
   );
   const conditions = getConditions(output).join("\n");

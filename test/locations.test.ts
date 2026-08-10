@@ -28,7 +28,7 @@ interface SourceLocation {
 void test("the CLI accepts locations from a JSON file", () => {
   const outputText = execFileSync(
     process.execPath,
-    ["src/index.ts", "test/fixtures/locations.json"],
+    ["src/index.ts", ".", "test/fixtures/locations.json"],
     { cwd: projectRoot, encoding: "utf8" },
   );
   const output = JSON.parse(outputText) as RuntimeChecksOutput;
@@ -74,7 +74,7 @@ void test("the CLI accepts an inline JSON location array", () => {
   ];
   const outputText = execFileSync(
     process.execPath,
-    ["src/index.ts", JSON.stringify(locations)],
+    ["src/index.ts", projectRoot, JSON.stringify(locations)],
     { cwd: projectRoot, encoding: "utf8" },
   );
   const output = JSON.parse(outputText) as RuntimeChecksOutput;

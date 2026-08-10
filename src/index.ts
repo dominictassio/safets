@@ -9,8 +9,8 @@ import {
   type Type,
   type TypeChecker,
 } from "ts-morph";
-import { readFileSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   makeCheck,
   typeToString,
@@ -33,12 +33,22 @@ const compilerOptions = {
 };
 
 const arguments_ = process.argv.slice(2);
-const locationInput = getLocationInput(arguments_);
+if (arguments_.length !== 2) {
+  throw new Error(
+    "Usage: safets <codebase-directory> <functions JSON, JSON file, or ->",
+  );
+}
 
-const output =
-  locationInput === undefined
-    ? generateTypeChecks(arguments_, compilerOptions)
-    : generateSelectedTypeChecks(parseTargets(locationInput), compilerOptions);
+const codebaseDirectory = resolve(arguments_[0]);
+if (!statSync(codebaseDirectory).isDirectory()) {
+  throw new Error(`Codebase path '${arguments_[0]}' must be a directory.`);
+}
+const locationInput = readLocationArgument(arguments_[1]);
+const output = generateSelectedTypeChecks(
+  codebaseDirectory,
+  parseTargets(locationInput),
+  compilerOptions,
+);
 
 console.log(JSON.stringify(output, undefined, 2));
 
@@ -80,29 +90,6 @@ interface ParameterCheck {
   expectedType: string;
   condition: string;
   code: string;
-}
-
-function getLocationInput(arguments_: readonly string[]): string | undefined {
-  if (arguments_[0] === "--locations") {
-    if (arguments_.length !== 2) {
-      throw new Error("Usage: safets --locations <JSON, JSON file, or ->");
-    }
-    return readLocationArgument(arguments_[1]);
-  }
-
-  if (arguments_.length !== 1) {
-    return undefined;
-  }
-
-  const argument = arguments_[0];
-  if (argument.trimStart().startsWith("[")) {
-    return argument;
-  }
-  if (argument.endsWith(".json") || argument === "-") {
-    return readLocationInput(argument);
-  }
-
-  return undefined;
 }
 
 function readLocationInput(input: string): string {
@@ -183,10 +170,12 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function generateSelectedTypeChecks(
+  codebaseDirectory: string,
   targets: readonly RuntimeCheckTarget[],
   options: ts.CompilerOptions,
 ): RuntimeChecksOutput {
   const project = createProject(
+    codebaseDirectory,
     targets.flatMap((target) => [
       target.function.fileLocation,
       ...target.parameters.map((parameter) => parameter.fileLocation),
@@ -198,7 +187,7 @@ function generateSelectedTypeChecks(
 
   for (const target of targets) {
     const sourceFile = project.getSourceFile(
-      resolve(target.function.fileLocation),
+      resolveCodebasePath(codebaseDirectory, target.function.fileLocation),
     );
     if (sourceFile === undefined) {
       throw new Error(
@@ -208,7 +197,9 @@ function generateSelectedTypeChecks(
 
     const declaration = sourceFile
       .getDescendantsOfKind(SyntaxKind.FunctionDeclaration)
-      .find((candidate) => isAtLocation(candidate, target.function));
+      .find((candidate) =>
+        isAtLocation(candidate, target.function, codebaseDirectory),
+      );
     if (declaration === undefined) {
       throw new Error(
         `Could not find a function declaration at ${formatLocation(target.function)}.`,
@@ -228,7 +219,9 @@ function generateSelectedTypeChecks(
     for (const parameterLocation of target.parameters) {
       const parameter = declaration
         .getParameters()
-        .find((candidate) => isAtLocation(candidate, parameterLocation));
+        .find((candidate) =>
+          isAtLocation(candidate, parameterLocation, codebaseDirectory),
+        );
       if (parameter === undefined) {
         throw new Error(
           `Could not find a parameter of the function at ${formatLocation(target.function)} at ${formatLocation(parameterLocation)}.`,
@@ -258,8 +251,15 @@ function generateSelectedTypeChecks(
   };
 }
 
-function isAtLocation(node: Node, location: SourceLocation): boolean {
-  if (node.getSourceFile().getFilePath() !== resolve(location.fileLocation)) {
+function isAtLocation(
+  node: Node,
+  location: SourceLocation,
+  codebaseDirectory: string,
+): boolean {
+  if (
+    node.getSourceFile().getFilePath() !==
+    resolveCodebasePath(codebaseDirectory, location.fileLocation)
+  ) {
     return false;
   }
 
@@ -269,11 +269,31 @@ function isAtLocation(node: Node, location: SourceLocation): boolean {
   );
 }
 
+function resolveCodebasePath(
+  codebaseDirectory: string,
+  fileLocation: string,
+): string {
+  if (isAbsolute(fileLocation)) {
+    throw new Error(`File location '${fileLocation}' must be relative.`);
+  }
+
+  const path = resolve(codebaseDirectory, fileLocation);
+  const relativePath = relative(codebaseDirectory, path);
+  if (relativePath === ".." || relativePath.startsWith(`..${sep}`)) {
+    throw new Error(
+      `File location '${fileLocation}' must remain within the codebase directory.`,
+    );
+  }
+
+  return path;
+}
+
 function formatLocation(location: SourceLocation): string {
   return `'${location.fileLocation}:${location.startLine.toString()}:${location.startColumn.toString()}'`;
 }
 
 function createProject(
+  codebaseDirectory: string,
   fileNames: readonly string[],
   options: ts.CompilerOptions,
 ): Project {
@@ -283,57 +303,12 @@ function createProject(
   });
 
   project.addSourceFilesAtPaths([
-    ...new Set(fileNames.map((name) => resolve(name))),
+    ...new Set(
+      fileNames.map((name) => resolveCodebasePath(codebaseDirectory, name)),
+    ),
   ]);
   project.resolveSourceFileDependencies();
   return project;
-}
-
-function generateTypeChecks(
-  fileNames: string[],
-  options: ts.CompilerOptions,
-): RuntimeChecksOutput {
-  const project = createProject(fileNames, options);
-  const checker = project.getTypeChecker();
-  const functions: FunctionChecks[] = [];
-
-  for (const sourceFile of project.getSourceFiles()) {
-    if (sourceFile.isDeclarationFile()) {
-      continue;
-    }
-
-    for (const functionDeclaration of sourceFile.getFunctions()) {
-      if (!functionDeclaration.isExported()) {
-        continue;
-      }
-
-      functions.push({
-        functionLocation: getLocation(functionDeclaration),
-        checks: generateRuntimeChecks(
-          functionDeclaration,
-          functionDeclaration.getParameters().map((parameter) => ({
-            declaration: parameter,
-            parameterLocation: getLocation(parameter),
-          })),
-          checker,
-        ),
-      });
-    }
-  }
-
-  return { schemaVersion: 1, functions };
-}
-
-function getLocation(node: Node): SourceLocation {
-  const sourceFile = node.getSourceFile();
-  const position = sourceFile.getLineAndColumnAtPos(node.getStart());
-  return {
-    fileLocation: relative(process.cwd(), sourceFile.getFilePath())
-      .split(sep)
-      .join("/"),
-    startLine: position.line,
-    startColumn: position.column,
-  };
 }
 
 function generateRuntimeChecks(
