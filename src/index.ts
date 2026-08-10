@@ -212,7 +212,7 @@ function emitSelectedTypeChecks(
   }
 
   for (const { declaration, parameters } of selectedFunctions.values()) {
-    emitFunctionWithChecks(declaration, parameters, checker);
+    emitRuntimeChecks(declaration, parameters, checker);
   }
 }
 
@@ -265,7 +265,7 @@ function emitTypeChecks(
         continue;
       }
 
-      emitFunctionWithChecks(
+      emitRuntimeChecks(
         functionDeclaration,
         functionDeclaration.getParameters(),
         checker,
@@ -274,37 +274,22 @@ function emitTypeChecks(
   }
 }
 
-function emitFunctionWithChecks(
+function emitRuntimeChecks(
   functionDeclaration: FunctionDeclaration,
   parameters: readonly ParameterDeclaration[],
   checker: TypeChecker,
 ): void {
-  const bodyText = functionDeclaration.getBodyText();
-  if (bodyText === undefined) {
-    throw new Error(
-      `Cannot add runtime checks to the function at '${functionDeclaration.getSourceFile().getFilePath()}:${functionDeclaration.getStartLineNumber().toString()}' because it has no body.`,
-    );
-  }
-
   const checks = parameters.map((parameter) => {
     const name = parameter.getName();
     const type = resolveType(parameter.getType(), checker, functionDeclaration);
     return { name, type, check: makeCheck(name, type) };
   });
 
-  const withChecks = functionDeclaration.setBodyText((writer) => {
-    for (const check of checks) {
-      writer.write(`if (!(${check.check}))`).block(() => {
-        writer.writeLine(
-          `throw new Error(\`TYPE ERROR: Parameter '${check.name}' is of type '${typeToString(check.type)}', but has a value of \${${check.name}}\`)`,
-        );
-      });
-    }
-
-    writer.write(bodyText);
-  });
-
-  console.log(withChecks.getText());
+  for (const check of checks) {
+    console.log(`if (!(${check.check})) {
+    throw new Error(\`TYPE ERROR: Parameter '${check.name}' is of type '${typeToString(check.type)}', but has a value of \${${check.name}}\`)
+}`);
+  }
 }
 
 function resolveType(

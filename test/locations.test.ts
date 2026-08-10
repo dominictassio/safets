@@ -12,10 +12,10 @@ void test("the CLI accepts locations from a JSON file", () => {
     { cwd: projectRoot, encoding: "utf8" },
   );
 
-  assert.match(output, /function selected/);
   assert.match(output, /typeof checked === "string"/);
   assert.doesNotMatch(output, /typeof unchecked === "number"/);
-  assert.doesNotMatch(output, /function unselected/);
+  assert.doesNotMatch(output, /function (?:selected|unselected)/);
+  assert.doesNotMatch(output, /return unchecked/);
 });
 
 void test("the CLI accepts an inline JSON location array", () => {
@@ -41,7 +41,7 @@ void test("the CLI accepts an inline JSON location array", () => {
     { cwd: projectRoot, encoding: "utf8" },
   );
 
-  assert.match(output, /function unselected/);
   assert.match(output, /typeof value === "boolean"/);
-  assert.doesNotMatch(output, /function selected/);
+  assert.doesNotMatch(output, /function (?:selected|unselected)/);
+  assert.doesNotMatch(output, /return value/);
 });
